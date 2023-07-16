@@ -14,7 +14,8 @@ Also a bit of a tutorial on Rust [procedural macros](https://doc.rust-lang.org/r
 being applied to this pattern-exploration
 
 So we'll start with the conceptual exploration but if you prefer you can jump straight to the
-[proc macro stuff](#proc-macros)
+[proc macro "intro" tutorial](#proc-macros) or [description of the proc macros for the
+"fully populated collections" pattern](#fully-populated-collection-proc-macros)
 
 ## The "fully populated collection" pattern
 
@@ -389,8 +390,28 @@ pub fn say_cheese(input: TokenStream) -> TokenStream {
 }
 ```
 
+Ok my editor is yelling at me about `proc_macro` so
+let's go ahead and inform it that this is a proc macro
+crate
+
+Looks to me like all we have to do to "make this a
+special procedural-macro crate" is just make
+sure this is in our `Cargo.toml`:
+```
+[lib]
+proc-macro = true
+```
+
+And yup `cargo check` is passing with just a couple
+unused-variable warnings
+
 Great now clearly it is time to "poke at" (aka "parse")
 that input `TokenStream`
+
+
+
+
+#### Parsing the input
 
 We could do an exploration of how to do that "manually from
 scratch"
@@ -425,13 +446,8 @@ Ya let's temporarily change our spec to instead of `"cheese"`
 we'll just complain if we get passed anything other than a Rust
 expression
 
-Then we can try wiring it up and seeing if it works and come
+Then we can try testing it and seeing if it works and come
 back to refining that to be `"cheese"`-specific
-
-
-
-
-#### Using `syn` for parsing the input
 
 I will hold your hand of how to translate what we see in the
 `syn` [docs](https://docs.rs/syn/2.0.25/syn/index.html)
@@ -460,20 +476,83 @@ as not returning anything
 It will just presumably warn us about `parsed_expr` being unused
 but we don't care
 
-Ok on to the "wiring-up"
+Ok on to testing... wait what's that my editor is yelling at me?
 
-
-
-#### Wiring up a procedural macro
-
-Looks to me like all we have to do to "make this a special procedural-macro crate" is just make
-sure this is in our `Cargo.toml`:
 ```
-[lib]
-proc-macro = true
+$ cargo check
+error[E0308]: mismatched types
+ --> src/lib.rs:5:23
+  |
+5 |     let parsed_expr = parse_macro_input!(input as Expr);
+  |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `()`, found `TokenStream`
+  |
+  = note: this error originates in the macro `parse_macro_input` (in Nightly builds, run with -Z macro-backtrace for more info)
 ```
 
-Let's assume that's good to go and create a new dummy crate for testing<span class="sidenote-number"></span>
+Hmm ok I legitimately thought this was going to work
+
+Ok after slight sniffing what's going on here is that
+`parse_macro_input!(...)` is a _little_ more magic than I expected
+
+Specifically it's hard-coding in the fact that it can `return`
+a `TokenStream` if it fails to parse the input
+
+So... we could either change our function signature to return `TokenStream`
+to make it happy
+
+Or we could not use `parse_macro_input!()`
+
+I'm going with the latter because we want to return the incredibly meaningful
+`()` not a `TokenStream`
+
+
+
+
+#### Avoiding `parse_macro_input!()`
+
+Ok so squinting at the definition of `parse_macro_input!()` it looks like
+it's more or less just a thin wrapper around calling
+[`syn::parse()`](https://docs.rs/syn/latest/syn/fn.parse.html)
+
+And per why it was trying to do a `return` for us, that `syn::parse()` call
+is fallible and returns a `syn::Result`
+
+So the appropriate return type for our function is going to be `syn::Result<()>`
+
+And we can write it like so:
+```
+use syn::parse;
+
+fn parse_input(input: TokenStream) -> syn::Result<()> {
+    let parsed_expr = parse::<Expr>(input)?;
+
+    Ok(())
+}
+```
+
+And then in our main `say_cheese()` function we can mimic that
+"return if it couldn't parse it" behavior (from `parse_macro_input!()`):
+```
+pub fn say_cheese(input: TokenStream) -> TokenStream {
+    let parsed_nothing = match parse_input(input) {
+        Ok(data) => data,
+        Err(err) => return err.to_compile_error().into(),
+    };
+
+    unimplemented!()
+}
+```
+
+Ok nice good to poke under the hood of `parse_macro_input!()`
+
+So I think we're ready to test it
+
+
+
+
+#### Testing the macro
+
+Let's create a new dummy crate for testing<span class="sidenote-number"></span>
 <span class="sidenote">Yes writing "actual tests" sounds nice. I don't know what to reach for for testing
 macros so let's just manually test</span>
 our procedural macro:
@@ -489,6 +568,180 @@ We just add our proc macros crate as a dependency:
 [dependencies]
 say_cheese = { path = "../say_cheese" }
 ```
+
+And then try and pass some valid Rust expression to it and see if it complains:
+```
+// test-say-cheese/src/main.rs
+
+use say_cheese::say_cheese;
+
+fn main() {
+    say_cheese!("Hello, world!");
+}
+```
+```
+$ cargo check
+error: proc macro panicked
+ --> src/main.rs:4:5
+  |
+4 |     say_cheese!("Hello, world!");
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: message: not implemented
+```
+
+Ok fair we said we didn't care about what our proc macro
+returns but the compiler cares a little bit
+
+So what's the dumbest thing we can do to have our `say_cheese()`
+function return a valid `TokenStream`?
+
+Well currently we don't know how to create new `TokenStream`'s
+
+So again feel free to dig into that yourself but I'm going to say
+"see if we can just `.clone()` the `input` `TokenStream`":
+```
+// say_cheese/src/lib.rs
+
+#[proc_macro]
+pub fn say_cheese(input: TokenStream) -> TokenStream {
+    let parsed_nothing = match parse_input(input.clone()) { // <-- added this .clone()
+        Ok(data) => data,
+        Err(err) => return err.to_compile_error().into(),
+    };
+
+    input // <-- and return this
+}
+```
+
+Ok (from `test-say-cheese/`) <br />
+`$ cargo run`
+
+Fabulous
+
+Does it complain as well as we expected if we change it to something
+that can't be parsed as a Rust expression
+
+```
+// test-say-cheese/src/main.rs
+
+fn main() {
+    say_cheese!(->);
+}
+```
+```
+$ cargo run
+error: unsupported expression; enable syn's features=["full"]
+ --> src/main.rs:4:18
+  |
+4 |     say_cheese!(->);
+  |                  ^
+```
+
+Ok (first) mission accomplished
+
+So now we need to refine it to only accept `"cheese"`
+
+To do that we're going to have to sniff at `syn`'s "parse-able" types
+a little more closely
+
+
+
+
+#### What does `syn` think a `"cheese"` is?
+
+Ok looking at `syn`'s docs, I spot `ExprLit` which says it could be
+(the parsed version of) `"foo"`
+
+So that sounds like the "narrower" type than `syn::Expr` that we want
+to try and parse into
+
+That should get us as far as it complaining if we pass anything besides
+a literal of some kind
+
+But then to check if that literal is the literal `"cheese"` I think we
+will have to do ourselves based on what we see in that `ExprLit`
+
+So "drilling down" through its [docs](https://docs.rs/syn/latest/syn/struct.ExprLit.html),
+it looks like its `lit` field needs to be a `Lit::Str` whose [`.value()`](https://docs.rs/syn/latest/syn/struct.LitStr.html#method.value)
+is `"cheese"`:
+
+```
+// say_cheese/src/lib.rs
+
+use syn::{ExprLit, Lit};
+
+fn parse_input(input: TokenStream) -> syn::Result<()> {
+    match parse::<ExprLit>(input)?.lit {
+        Lit::Str(lit_str) if lit_str.value() == "cheese" => Ok(()),
+        _ => // what do we do here?
+    }
+}
+```
+
+Ok right I guess we need to know how to complain ourselves
+
+Reading `syn`'s [`Error` docs](https://docs.rs/syn/latest/syn/parse/struct.Error.html)
+it looks like this is appropriate:
+
+```
+// say_cheese/src/lib.rs
+
+use syn::Error;
+
+fn parse_input(input: TokenStream) -> syn::Result<()> {
+    match parse::<ExprLit>(input)?.lit {
+        Lit::Str(lit_str) if lit_str.value() == "cheese" => Ok(()),
+        lit => Err(Error::new(lit.span(), "expected \"cheese\"")), // <-- added this
+    }
+}
+```
+
+Ok so to test that first the "happy path":
+
+```
+// test-say-cheese/src/main.rs
+
+fn main() {
+    say_cheese!("cheese");
+}
+```
+```
+$ cargo run
+```
+
+...and the "unhappy path":
+```
+// test-say-cheese/src/main.rs
+
+fn main() {
+    say_cheese!("not cheese");
+}
+```
+```
+$ cargo run
+error: expected "cheese"
+ --> src/main.rs:4:17
+  |
+4 |     say_cheese!("not cheese");
+  |                 ^^^^^^^^^^^^
+```
+
+I just wept at its beauty
+
+Ok I'm going to call that "part 2"
+
+And now for part 3 you can let me take the
+wheel and spell out the plan + execution of
+the "fully-populated collection" proc macros
+while you bask in the glory of what just
+happened
+
+
+
+
+## <a name="fully-populated-collection-proc-macros" /> Some proc macros for "fully populated collections"
+
 
 #### Upsides
 #### Downsides

@@ -482,5 +482,13 @@ our procedural macro:
 $ cargo new test-say-cheese
 ```
 
+We just add our proc macros crate as a dependency:
+```
+# test-say-cheese/Cargo.toml
+
+[dependencies]
+say_cheese = { path = "../say_cheese" }
+```
+
 #### Upsides
 #### Downsides

@@ -3,7 +3,7 @@ layout: post
 excerpt_separator: <!--more-->
 title: "Using Rust proc macros to explore the \"fully populated collection\" pattern"
 permalink: proc-macros-fully-populated-collection/
-date: 2023-07-11
+date: 2023-07-16
 ---
 
 This is an exploration of a pattern that I've only vaguely come across in whatever languages
@@ -14,7 +14,7 @@ Also a bit of a tutorial on Rust [procedural macros](https://doc.rust-lang.org/r
 being applied to this pattern-exploration
 
 So we'll start with the conceptual exploration but if you prefer you can jump straight to the
-[proc macro "intro" tutorial](#proc-macros) or [description of the proc macros for the
+[proc macro "intro" tutorial](#proc-macros) or [description of the proc macros used for the
 "fully populated collections" pattern](#fully-populated-collection-proc-macros)
 
 ## The "fully populated collection" pattern
@@ -861,7 +861,6 @@ generating the actual "token" `enum` type definition:
 #[proc_macro]
 pub fn fixed_map(input: TokenStream) -> TokenStream {
     let FixedMapArgs { name, variants } = parse_macro_input!(input as FixedMapArgs);
-
 
     let token_enum_definition = get_token_enum_definition(&name, &variants);
     ...
